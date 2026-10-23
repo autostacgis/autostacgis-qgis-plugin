@@ -24,7 +24,6 @@ from qgis.PyQt.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -35,6 +34,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from .compat import QAction, qt_enum
+from .json_editor import JsonEditor
 from .model import CAPABILITIES, asset_provider, configuration, next_page, resolve_item
 from .network import Client
 
@@ -45,9 +45,9 @@ class AutoSTACGISPlugin:
         self.dock = None
 
     def initGui(self):
-        self.action = QAction("AutoSTACGIS", self.iface.mainWindow())
+        self.action = QAction("AutostacGIS", self.iface.mainWindow())
         self.action.triggered.connect(self.show)
-        self.iface.addPluginToMenu("AutoSTACGIS", self.action)
+        self.iface.addPluginToMenu("AutostacGIS", self.action)
         self.iface.addToolBarIcon(self.action)
 
     def show(self):
@@ -58,7 +58,7 @@ class AutoSTACGISPlugin:
         self.dock.raise_()
 
     def unload(self):
-        self.iface.removePluginMenu("AutoSTACGIS", self.action)
+        self.iface.removePluginMenu("AutostacGIS", self.action)
         self.iface.removeToolBarIcon(self.action)
         if self.dock:
             self.dock.close_requests()
@@ -69,9 +69,9 @@ class AutoSTACGISPlugin:
 
 class CatalogDock(QDockWidget):
     def __init__(self, iface):
-        super().__init__("AutoSTACGIS", iface.mainWindow())
+        super().__init__("AutostacGIS", iface.mainWindow())
         self.iface = iface
-        self.setObjectName("AutoSTACGIS")
+        self.setObjectName("AutostacGIS")
         self.resize(550, 850)
         self.client = None
         self.plugins = []
@@ -90,7 +90,7 @@ class CatalogDock(QDockWidget):
         form.addRow("API token (session only)", self.token)
         layout.addLayout(form)
         layout.addWidget(self.button("Connect", self.connect_api))
-        self.status = QLabel("Connect to a STAC API. Processing controls require an AutoSTACGIS backend.")
+        self.status = QLabel("Connect to a STAC API. Processing controls require an AutostacGIS backend.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.tabs = QTabWidget()
@@ -106,8 +106,13 @@ class CatalogDock(QDockWidget):
             scroll.setWidget(widget)
             self.capability_tabs[capability] = scroll
             self.tabs.addTab(scroll, capability)
+        self.make_registry()
+        self.make_structure()
         self.make_workflow()
         self.make_jobs()
+        self.tabs.currentChanged.connect(
+            lambda index: self.guarded(self.refresh_registry) if index == self.registry_index else None
+        )
 
     def button(self, label, callback):
         widget = QPushButton(label)
@@ -136,8 +141,8 @@ class CatalogDock(QDockWidget):
         for field in (self.collections, self.datetime, self.bbox):
             layout.addWidget(field)
         layout.addWidget(self.button("Use main map extent", lambda: self.guarded(self.map_extent)))
-        self.search_json = QPlainTextEdit('{"limit": 50}')
-        self.search_json.setMaximumHeight(100)
+        self.search_json = JsonEditor('{"limit": 50}')
+        self.search_json.setMinimumHeight(220)
         layout.addWidget(QLabel("Additional STAC search parameters (JSON)"))
         layout.addWidget(self.search_json)
         row = QHBoxLayout()
@@ -173,7 +178,7 @@ class CatalogDock(QDockWidget):
                 "autostacgis/plugins",
                 self.load_plugins,
                 lambda error: self.message(
-                    "STAC browsing available; AutoSTACGIS controls unavailable: " + error
+                    "STAC browsing available; AutostacGIS controls unavailable: " + error
                 ),
             )
 
@@ -343,7 +348,7 @@ class CatalogDock(QDockWidget):
                 enabled.toggled.connect(lambda checked, name=plugin["id"]: self.select_solver(name, checked))
                 panel.addWidget(enabled)
                 panel.addWidget(QLabel("Requires: " + ", ".join(plugin["requires"])))
-                editor = QPlainTextEdit(json.dumps(selected.get(plugin["id"], plugin["defaults"]), indent=2))
+                editor = JsonEditor(json.dumps(selected.get(plugin["id"], plugin["defaults"]), indent=2))
                 editor.setMinimumHeight(100)
                 editor.setMaximumHeight(240)
                 panel.addWidget(editor)
@@ -354,7 +359,7 @@ class CatalogDock(QDockWidget):
                             lambda _, name=plugin["id"]: self.guarded(lambda: self.invoke("jobs", name)),
                         )
                     )
-                schema = QPlainTextEdit(json.dumps(plugin["settings_schema"], indent=2))
+                schema = JsonEditor(json.dumps(plugin["settings_schema"], indent=2))
                 schema.setReadOnly(True)
                 schema.hide()
                 toggle = QPushButton("Parameter contract")
@@ -366,6 +371,12 @@ class CatalogDock(QDockWidget):
             layout.addStretch()
             scroll.setWidget(body)
         self.request_json.setPlainText(json.dumps(self.document["request"], indent=2))
+        self.structure_json.setPlainText(
+            json.dumps(
+                self.document.get("metadata_structure", {"schemas": [], "inline": {}, "strict": True}),
+                indent=2,
+            )
+        )
         self.message(f"Loaded {len(self.plugins)} plugins across {len(CAPABILITIES)} capability tabs.")
 
     def select_solver(self, name, checked):
@@ -375,12 +386,96 @@ class CatalogDock(QDockWidget):
                 if other["capability"] == "solver" and other["id"] != name and other["id"] in self.editors:
                     self.editors[other["id"]][0].setChecked(False)
 
+    def make_structure(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        description = QLabel(
+            "Declare STAC Item schema URLs in schemas and additional fields in the inline Item JSON Schema. Strict mode rejects undeclared metadata."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        self.structure_json = JsonEditor('{"schemas": [], "inline": {}, "strict": true}')
+        layout.addWidget(self.structure_json)
+        self.tabs.addTab(widget, "Metadata Structure")
+
+    def make_registry(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        notice = QLabel(
+            "Install reviewed Python code on the connected backend. Plugins run with its permissions."
+        )
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        self.available_plugins = QTreeWidget()
+        self.available_plugins.setHeaderLabels(["Plugin", "Version", "Capability"])
+        layout.addWidget(self.available_plugins)
+        layout.addWidget(self.button("Refresh online catalog", lambda: self.guarded(self.refresh_registry)))
+        layout.addWidget(
+            self.button("Install selected version", lambda: self.guarded(self.install_published))
+        )
+        layout.addWidget(self.button("Install Python file", lambda: self.guarded(self.install_file)))
+        self.registry_client = Client("https://autostacgis.github.io/autostacgis-plugins/")
+        self.registry_index = self.tabs.addTab(widget, "Plugin Registry")
+
+    def refresh_registry(self):
+        def loaded(value, url):
+            if value.get("format_version") != 1:
+                raise ValueError("Unsupported plugin manifest")
+            self.available_plugins.clear()
+            for row in value["plugins"]:
+                self.available_plugins.addTopLevelItem(
+                    QTreeWidgetItem([row["id"], row["version"], row["capability"]])
+                )
+            self.message(f"{len(value['plugins'])} plugins published online")
+
+        if self.client:
+            self.client.request("autostacgis/plugins/available", loaded, self.message)
+        else:
+            self.registry_client.request("plugins.json", loaded, self.message)
+
+    def installed_plugin(self, value, url):
+        # Preserve the current workflow/settings while refreshing the installed contracts.
+        self.document = self.configuration()
+        self.client.request(
+            "autostacgis/plugins",
+            lambda value, url: self.load_plugins({"plugins": value["plugins"]}, url),
+            self.message,
+        )
+        self.message("Plugin installed")
+
+    def install_published(self):
+        if not self.client:
+            raise ValueError("Connect to a backend first")
+        row = self.available_plugins.currentItem()
+        if not row:
+            raise ValueError("Select a published plugin version")
+        self.client.request(
+            "autostacgis/plugins/install",
+            self.installed_plugin,
+            self.message,
+            "POST",
+            {"name": row.text(0), "version": row.text(1)},
+        )
+
+    def install_file(self):
+        if not self.client:
+            raise ValueError("Connect to a backend first")
+        filename, _ = QFileDialog.getOpenFileName(self, "Install Python plugin", "", "Python (*.py)")
+        if filename:
+            self.client.request(
+                "autostacgis/plugins/install-file",
+                self.installed_plugin,
+                self.message,
+                "POST",
+                {"filename": Path(filename).name, "source": Path(filename).read_text()},
+            )
+
     def make_workflow(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         self.config_name = QLineEdit("default")
         layout.addWidget(self.config_name)
-        self.request_json = QPlainTextEdit(json.dumps(self.document["request"], indent=2))
+        self.request_json = JsonEditor(json.dumps(self.document["request"], indent=2))
         layout.addWidget(QLabel("Request / goal (raw JSON)"))
         layout.addWidget(self.request_json)
         for label, callback in (
@@ -393,7 +488,7 @@ class CatalogDock(QDockWidget):
             ("Import configuration", self.import_configuration),
         ):
             layout.addWidget(self.button(label, lambda _, function=callback: self.guarded(function)))
-        self.output = QPlainTextEdit()
+        self.output = JsonEditor()
         self.output.setReadOnly(True)
         layout.addWidget(self.output)
         self.tabs.addTab(widget, "Workflow")
@@ -406,6 +501,7 @@ class CatalogDock(QDockWidget):
         }
         selected = list(settings)
         document = deepcopy(self.document)
+        document["metadata_structure"] = json.loads(self.structure_json.toPlainText())
         document["request"] = json.loads(self.request_json.toPlainText())
         if self.plugins:
             document = configuration(document, selected, settings, self.plugins)
@@ -504,5 +600,6 @@ class CatalogDock(QDockWidget):
             )
 
     def close_requests(self):
+        self.registry_client.close()
         if self.client:
             self.client.close()

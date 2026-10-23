@@ -1,12 +1,12 @@
 [general]
-name=AutoSTACGIS
+name=AutostacGIS
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
-description=Search STAC APIs, add assets to QGIS, and configure AutoSTACGIS workflows
-version=0.1.0
-author=AutoSTACGIS
+description=Search STAC APIs, add assets to QGIS, and configure AutostacGIS workflows
+version=0.2.0
+author=AutostacGIS
 email=maintainers@autostacgis.org
-about=Standard STAC search and assets in the main QGIS map, with capability tabs, per-plugin settings and remote AutoSTACGIS planning and jobs.
+about=Standard STAC search and assets in the main QGIS map, with capability tabs, per-plugin settings and remote AutostacGIS planning and jobs.
 category=Web
 homepage=https://github.com/autostacgis/autostacgis-qgis-plugin
 repository=https://github.com/autostacgis/autostacgis-qgis-plugin

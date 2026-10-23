@@ -26,7 +26,7 @@ class Client:
         if self.token:
             request.setRawHeader(b"Authorization", ("Bearer " + self.token).encode())
         if hasattr(request, "setTransferTimeout"):
-            request.setTransferTimeout(60000)
+            request.setTransferTimeout(600000 if "plugins/install" in path else 60000)
         manager = QgsNetworkAccessManager.instance()
         if method == "GET":
             reply = manager.get(request)

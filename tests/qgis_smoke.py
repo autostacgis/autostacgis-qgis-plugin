@@ -43,7 +43,17 @@ descriptor = {
     },
 }
 dock.load_plugins(descriptor, dock.client.url)
-assert dock.tabs.count() == len(CAPABILITIES) + 3
+from autostacgis_qgis.json_editor import JsonEditor
+editor = JsonEditor('{"ready":false,"list":[1,null]}')
+row = editor.tree.topLevelItem(0).child(0)
+row.setText(2, 'true')
+assert __import__('json').loads(editor.toPlainText())['ready'] is True
+editor.setPlainText('{broken')
+assert not editor.tabs.isTabEnabled(0)
+editor.setPlainText('{"fixed":true}')
+assert editor.tabs.isTabEnabled(0)
+editor.close()
+assert dock.tabs.count() == len(CAPABILITIES) + 5
 assert {entry["use"] for entry in dock.configuration()["catalog"]["plugins"]} == {
     "backward_chain",
     "metadata-value",
