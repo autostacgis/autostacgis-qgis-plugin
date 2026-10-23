@@ -1,0 +1,29 @@
+name: qgis-plugin
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest ruff
+      - run: pytest
+        env: {PYTHONPATH: '.'}
+      - run: ruff check autostacgis_qgis scripts tests
+      - run: ruff format --check autostacgis_qgis scripts tests
+      - run: python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with: {name: autostacgis-qgis, path: dist/autostacgis-qgis.zip}
+  qgis:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ['qgis/qgis:stable', 'qgis/qgis:stable-questing']
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tests/qgis_smoke.py
+        env: {QT_QPA_PLATFORM: offscreen, PYTHONPATH: '.'}
