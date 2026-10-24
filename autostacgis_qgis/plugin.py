@@ -1,6 +1,6 @@
 import json
-from copy import deepcopy
 from pathlib import Path
+from urllib.parse import quote
 
 from qgis.core import (
     QgsCoordinateReferenceSystem,
@@ -17,11 +17,13 @@ from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -76,7 +78,13 @@ class CatalogDock(QDockWidget):
         self.client = None
         self.plugins = []
         self.editors = {}
-        self.document = {"catalog": {"version": "1.0.0", "plugins": []}, "request": {"goal": {"output": {}}}}
+        self.document = {
+            "solver": {"backward_chain": {}},
+            "goal": {"metadata-value": {"path": "properties.ready", "value": True}},
+        }
+        self.syncing = False
+        self.workflow_dirty = False
+        self.active_workflow = None
         self.pagination = None
         self.search_body = {}
         body = QWidget()
@@ -110,9 +118,7 @@ class CatalogDock(QDockWidget):
         self.make_structure()
         self.make_workflow()
         self.make_jobs()
-        self.tabs.currentChanged.connect(
-            lambda index: self.guarded(self.refresh_registry) if index == self.registry_index else None
-        )
+        self.tabs.currentChanged.connect(self.change_tab)
 
     def button(self, label, callback):
         widget = QPushButton(label)
@@ -328,13 +334,15 @@ class CatalogDock(QDockWidget):
 
     def load_plugins(self, value, url):
         self.plugins = value["plugins"]
+        self.syncing = True
         if "default_configuration" in value:
             self.document = value["default_configuration"]
-            for entry in self.document["catalog"]["plugins"]:
-                if entry["use"] == "stac-source":
-                    entry["settings"] = {"api_url": self.client.url}
         self.editors = {}
-        selected = {entry["use"]: entry.get("settings", {}) for entry in self.document["catalog"]["plugins"]}
+        selected = {
+            name: parameters
+            for capability in CAPABILITIES
+            for name, parameters in self.document.get(capability, {}).items()
+        }
         for capability, scroll in self.capability_tabs.items():
             body = QWidget()
             layout = QVBoxLayout(body)
@@ -347,8 +355,14 @@ class CatalogDock(QDockWidget):
                 enabled.setChecked(plugin["id"] in selected)
                 enabled.toggled.connect(lambda checked, name=plugin["id"]: self.select_solver(name, checked))
                 panel.addWidget(enabled)
+                description = QLabel(plugin.get("description", ""))
+                description.setWordWrap(True)
+                panel.addWidget(description)
                 panel.addWidget(QLabel("Requires: " + ", ".join(plugin["requires"])))
-                editor = JsonEditor(json.dumps(selected.get(plugin["id"], plugin["defaults"]), indent=2))
+                editor = JsonEditor(
+                    json.dumps(selected.get(plugin["id"], plugin["defaults"]), indent=2),
+                    schema=plugin["settings_schema"],
+                )
                 editor.setMinimumHeight(100)
                 editor.setMaximumHeight(240)
                 panel.addWidget(editor)
@@ -367,24 +381,32 @@ class CatalogDock(QDockWidget):
                 panel.addWidget(toggle)
                 panel.addWidget(schema)
                 self.editors[plugin["id"]] = (enabled, editor)
+                editor.text.textChanged.connect(self.sync_plugins)
                 layout.addWidget(group)
             layout.addStretch()
             scroll.setWidget(body)
-        self.request_json.setPlainText(json.dumps(self.document["request"], indent=2))
+        self.request_json.setPlainText(json.dumps(self.document, indent=2))
         self.structure_json.setPlainText(
             json.dumps(
-                self.document.get("metadata_structure", {"schemas": [], "inline": {}, "strict": True}),
+                self.document.get("metadata_structure", {}),
                 indent=2,
             )
         )
+        self.syncing = False
+        self.workflow_dirty = False
         self.message(f"Loaded {len(self.plugins)} plugins across {len(CAPABILITIES)} capability tabs.")
 
     def select_solver(self, name, checked):
         plugin = next((plugin for plugin in self.plugins if plugin["id"] == name), None)
-        if checked and plugin and plugin["capability"] == "solver":
+        if checked and plugin and plugin["capability"] in ("solver", "trigger"):
             for other in self.plugins:
-                if other["capability"] == "solver" and other["id"] != name and other["id"] in self.editors:
+                if (
+                    other["capability"] == plugin["capability"]
+                    and other["id"] != name
+                    and other["id"] in self.editors
+                ):
                     self.editors[other["id"]][0].setChecked(False)
+        self.sync_plugins()
 
     def make_structure(self):
         widget = QWidget()
@@ -396,6 +418,7 @@ class CatalogDock(QDockWidget):
         layout.addWidget(description)
         self.structure_json = JsonEditor('{"schemas": [], "inline": {}, "strict": true}')
         layout.addWidget(self.structure_json)
+        self.structure_json.text.textChanged.connect(self.sync_plugins)
         self.tabs.addTab(widget, "Metadata Structure")
 
     def make_registry(self):
@@ -414,7 +437,7 @@ class CatalogDock(QDockWidget):
             self.button("Install selected version", lambda: self.guarded(self.install_published))
         )
         layout.addWidget(self.button("Install Python file", lambda: self.guarded(self.install_file)))
-        self.registry_client = Client("https://autostacgis.github.io/autostacgis-plugins/")
+        self.registry_client = None
         self.registry_index = self.tabs.addTab(widget, "Plugin Registry")
 
     def refresh_registry(self):
@@ -431,7 +454,7 @@ class CatalogDock(QDockWidget):
         if self.client:
             self.client.request("autostacgis/plugins/available", loaded, self.message)
         else:
-            self.registry_client.request("plugins.json", loaded, self.message)
+            self.message("Connect to an AutostacGIS backend first")
 
     def installed_plugin(self, value, url):
         # Preserve the current workflow/settings while refreshing the installed contracts.
@@ -470,20 +493,163 @@ class CatalogDock(QDockWidget):
                 {"filename": Path(filename).name, "source": Path(filename).read_text()},
             )
 
+    def make_workflow_library(self, layout):
+        layout.addWidget(QLabel("Published workflows"))
+        self.published_workflows = QComboBox()
+        layout.addWidget(self.published_workflows)
+        layout.addWidget(
+            self.button("Activate published workflow", lambda: self.guarded(self.activate_published_workflow))
+        )
+        layout.addWidget(QLabel("Saved workflows"))
+        self.saved_workflows = QComboBox()
+        layout.addWidget(self.saved_workflows)
+        for label, method in (
+            ("Refresh workflows", self.refresh_workflows),
+            ("Activate saved workflow", self.activate_saved_workflow),
+            ("Save a copy", self.copy_workflow),
+            ("Rename saved workflow", self.rename_workflow),
+            ("Delete saved workflow", self.delete_workflow),
+        ):
+            layout.addWidget(self.button(label, lambda _, method=method: self.guarded(method)))
+        self.update_workflow_button = self.button(
+            "Update saved workflow", lambda: self.guarded(self.update_workflow)
+        )
+        self.update_workflow_button.setEnabled(False)
+        layout.addWidget(self.update_workflow_button)
+
+    def refresh_workflows(self):
+        if not self.client:
+            raise ValueError("Connect first")
+
+        def published(value, url):
+            self.published_workflows.clear()
+            for row in value["workflows"]:
+                self.published_workflows.addItem(f"{row['id']} · {row['version']}", row)
+                self.published_workflows.setItemData(
+                    self.published_workflows.count() - 1,
+                    row["description"],
+                    qt_enum(Qt, "ItemDataRole", "ToolTipRole"),
+                )
+
+        def saved(value, url):
+            self.saved_workflows.clear()
+            for row in value:
+                self.saved_workflows.addItem(row["id"], row)
+
+        self.client.request("autostacgis/workflows/available", published, self.message)
+        self.client.request("autostacgis/workflows", saved, self.message)
+
+    def activate_workflow(self, document, name=None):
+        self.document = document
+        self.active_workflow = name
+        self.config_name.setText(name or "Unsaved workflow")
+        self.update_workflow_button.setEnabled(name is not None)
+        self.load_plugins({"plugins": self.plugins}, "")
+        self.message("Workflow activated")
+
+    def activate_published_workflow(self):
+        row = self.published_workflows.currentData()
+        if not row:
+            raise ValueError("Choose a published workflow")
+        self.client.request(
+            "autostacgis/workflows/published/" + quote(row["id"], safe=""),
+            lambda value, url: self.activate_workflow(value["document"]),
+            self.message,
+        )
+
+    def activate_saved_workflow(self):
+        row = self.saved_workflows.currentData()
+        if not row:
+            raise ValueError("Choose a saved workflow")
+        self.activate_workflow(row["document"], row["id"])
+
+    def workflow_saved(self, value, url):
+        self.active_workflow = value["id"]
+        self.config_name.setText(value["id"])
+        self.update_workflow_button.setEnabled(True)
+        self.refresh_workflows()
+        self.message("Workflow saved")
+
+    def copy_workflow(self):
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save workflow copy",
+            "Workflow name",
+            text=(self.active_workflow + " copy") if self.active_workflow else "My workflow",
+        )
+        if accepted and name.strip():
+            self.client.request(
+                "autostacgis/workflows",
+                self.workflow_saved,
+                self.message,
+                "POST",
+                {"name": name, "document": self.configuration()},
+            )
+
+    def update_workflow(self):
+        if not self.active_workflow:
+            raise ValueError("Activate a saved workflow first")
+        self.client.request(
+            "autostacgis/workflows/" + quote(self.active_workflow, safe=""),
+            self.workflow_saved,
+            self.message,
+            "PUT",
+            self.configuration(),
+        )
+
+    def rename_workflow(self):
+        row = self.saved_workflows.currentData()
+        if not row:
+            raise ValueError("Choose a saved workflow")
+        name, accepted = QInputDialog.getText(self, "Rename workflow", "Workflow name", text=row["id"])
+        if accepted and name.strip():
+
+            def renamed(value, url):
+                if self.active_workflow == row["id"]:
+                    self.active_workflow = value["id"]
+                    self.config_name.setText(value["id"])
+                self.refresh_workflows()
+                self.message("Workflow renamed")
+
+            self.client.request(
+                "autostacgis/workflows/" + quote(row["id"], safe=""),
+                renamed,
+                self.message,
+                "PATCH",
+                {"name": name},
+            )
+
+    def delete_workflow(self):
+        row = self.saved_workflows.currentData()
+        if not row:
+            raise ValueError("Choose a saved workflow")
+
+        def deleted(value, url):
+            if self.active_workflow == row["id"]:
+                self.active_workflow = None
+                self.config_name.setText("Unsaved workflow")
+                self.update_workflow_button.setEnabled(False)
+            self.refresh_workflows()
+            self.message("Workflow deleted")
+
+        self.client.request(
+            "autostacgis/workflows/" + quote(row["id"], safe=""), deleted, self.message, "DELETE"
+        )
+
     def make_workflow(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        self.config_name = QLineEdit("default")
+        self.config_name = QLineEdit("Unsaved workflow")
+        self.config_name.setReadOnly(True)
         layout.addWidget(self.config_name)
-        self.request_json = JsonEditor(json.dumps(self.document["request"], indent=2))
-        layout.addWidget(QLabel("Request / goal (raw JSON)"))
+        self.request_json = JsonEditor(json.dumps(self.document, indent=2))
+        self.request_json.text.textChanged.connect(self.workflow_changed)
+        layout.addWidget(QLabel("Workflow configuration"))
         layout.addWidget(self.request_json)
         for label, callback in (
             ("Validate", lambda: self.invoke("validate")),
             ("Plan selected items / discover", lambda: self.invoke("plan")),
             ("Run selected items / discover", lambda: self.invoke("jobs")),
-            ("Save configuration to backend", self.save_configuration),
-            ("Load backend configuration", self.load_configuration),
             ("Export configuration", self.export_configuration),
             ("Import configuration", self.import_configuration),
         ):
@@ -491,21 +657,48 @@ class CatalogDock(QDockWidget):
         self.output = JsonEditor()
         self.output.setReadOnly(True)
         layout.addWidget(self.output)
-        self.tabs.addTab(widget, "Workflow")
+        self.make_workflow_library(layout)
+        self.workflow_index = self.tabs.addTab(widget, "Workflow")
 
     def configuration(self):
-        settings = {
-            name: json.loads(editor.toPlainText())
-            for name, (enabled, editor) in self.editors.items()
-            if enabled.isChecked()
-        }
-        selected = list(settings)
-        document = deepcopy(self.document)
-        document["metadata_structure"] = json.loads(self.structure_json.toPlainText())
-        document["request"] = json.loads(self.request_json.toPlainText())
-        if self.plugins:
-            document = configuration(document, selected, settings, self.plugins)
-        return document
+        return json.loads(self.request_json.toPlainText())
+
+    def workflow_changed(self):
+        if not self.syncing:
+            self.workflow_dirty = True
+
+    def sync_plugins(self):
+        if self.syncing:
+            return
+        try:
+            settings = {
+                name: json.loads(editor.toPlainText())
+                for name, (enabled, editor) in self.editors.items()
+                if enabled.isChecked()
+            }
+            document = configuration(self.configuration(), list(settings), settings, self.plugins)
+            structure = json.loads(self.structure_json.toPlainText())
+            if structure:
+                document["metadata_structure"] = structure
+            else:
+                document.pop("metadata_structure", None)
+            self.syncing = True
+            self.document = document
+            self.request_json.setPlainText(json.dumps(document, indent=2))
+        except ValueError as exc:
+            self.message(exc)
+        finally:
+            self.syncing = False
+
+    def change_tab(self, index):
+        if self.workflow_dirty and index != self.workflow_index and self.plugins:
+            try:
+                self.document = self.configuration()
+                self.load_plugins({"plugins": self.plugins}, "")
+            except ValueError as exc:
+                self.message(exc)
+        if index == self.registry_index:
+            self.guarded(self.refresh_registry)
 
     def invoke(self, operation, trigger=None):
         if not self.client:
@@ -523,25 +716,6 @@ class CatalogDock(QDockWidget):
             "POST",
             value,
         )
-
-    def save_configuration(self):
-        self.client.request(
-            "autostacgis/configurations/" + self.config_name.text(),
-            lambda value, url: self.message("Configuration saved"),
-            self.message,
-            "PUT",
-            self.configuration(),
-        )
-
-    def load_configuration(self):
-        def loaded(value, url):
-            row = next((row for row in value if row["id"] == self.config_name.text()), None)
-            if not row:
-                raise ValueError("Configuration not found")
-            self.document = row["document"]
-            self.load_plugins({"plugins": self.plugins}, url)
-
-        self.client.request("autostacgis/configurations", loaded, self.message)
 
     def export_configuration(self):
         filename, _ = QFileDialog.getSaveFileName(
@@ -600,6 +774,7 @@ class CatalogDock(QDockWidget):
             )
 
     def close_requests(self):
-        self.registry_client.close()
+        if self.registry_client:
+            self.registry_client.close()
         if self.client:
             self.client.close()

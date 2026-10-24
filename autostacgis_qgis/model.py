@@ -104,24 +104,32 @@ def asset_provider(asset):
 
 def configuration(document, selected, settings, plugins):
     result = deepcopy(document)
-    catalog = result.setdefault("catalog", {"version": "1.0.0", "plugins": []})
-    enabled = set(selected)
-    pending = list(enabled)
     definitions = {plugin["id"]: plugin for plugin in plugins}
+    for capability in CAPABILITIES:
+        for name in document.get(capability, {}):
+            if name not in definitions or definitions[name]["capability"] != capability:
+                raise ValueError(f"Unavailable {capability} plugin {name}")
+    for capability in CAPABILITIES:
+        result.pop(capability, None)
+    result.pop("catalog", None)
+    result.pop("request", None)
+    enabled = set(selected)
+    pending = list(selected)
     while pending:
         name = pending.pop()
         for dependency in definitions[name].get("requires", []):
             if dependency not in enabled:
                 enabled.add(dependency)
                 pending.append(dependency)
+    for capability in ("solver", "trigger"):
+        if sum(definitions[name]["capability"] == capability for name in enabled) > 1:
+            raise ValueError(f"Select only one {capability}")
+    for name in selected:
+        plugin = definitions[name]
+        result.setdefault(plugin["capability"], {})[name] = deepcopy(
+            settings.get(name, plugin.get("defaults", {}))
+        )
     solvers = [name for name in enabled if definitions[name]["capability"] == "solver"]
-    if len(solvers) > 1:
-        raise ValueError("Select only one solver, including goal dependencies")
-    catalog["plugins"] = [
-        {"use": name, "settings": deepcopy(settings.get(name, {}))} for name in sorted(enabled)
-    ]
-    if solvers:
-        catalog["solver"] = {"plugin": solvers[0]}
-    else:
-        catalog.pop("solver", None)
+    if solvers and "solver" not in result:
+        result["solver"] = {solvers[0]: {}}
     return result

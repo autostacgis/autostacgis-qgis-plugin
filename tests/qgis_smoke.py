@@ -8,6 +8,7 @@ from osgeo import gdal, osr
 from qgis.core import QgsApplication, QgsProject
 from qgis.PyQt.QtWidgets import QMainWindow
 
+from autostacgis_qgis.json_editor import JsonEditor
 from autostacgis_qgis.model import CAPABILITIES
 from autostacgis_qgis.plugin import CatalogDock
 
@@ -35,29 +36,23 @@ plugins = [
 descriptor = {
     "plugins": plugins,
     "default_configuration": {
-        "catalog": {
-            "version": "1.0.0",
-            "plugins": [{"use": "metadata-value", "settings": {"path": "properties.ready", "value": True}}],
-        },
-        "request": {"goal": {"output": {}}},
+        "solver": {"backward_chain": {}},
+        "goal": {"metadata-value": {"path": "properties.ready", "value": True}},
     },
 }
 dock.load_plugins(descriptor, dock.client.url)
-from autostacgis_qgis.json_editor import JsonEditor
 editor = JsonEditor('{"ready":false,"list":[1,null]}')
 row = editor.tree.topLevelItem(0).child(0)
-row.setText(2, 'true')
-assert __import__('json').loads(editor.toPlainText())['ready'] is True
-editor.setPlainText('{broken')
-assert not editor.tabs.isTabEnabled(0)
+row.setText(2, "true")
+assert __import__("json").loads(editor.toPlainText())["ready"] is True
+editor.setPlainText("{broken")
+assert not editor.mode.model().item(0).isEnabled()
 editor.setPlainText('{"fixed":true}')
-assert editor.tabs.isTabEnabled(0)
+assert editor.mode.model().item(0).isEnabled()
 editor.close()
 assert dock.tabs.count() == len(CAPABILITIES) + 5
-assert {entry["use"] for entry in dock.configuration()["catalog"]["plugins"]} == {
-    "backward_chain",
-    "metadata-value",
-}
+assert dock.configuration()["solver"] == {"backward_chain": {}}
+assert dock.configuration()["goal"]["metadata-value"]["value"] is True
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / "image.tif"
     dataset = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)

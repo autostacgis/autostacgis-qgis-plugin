@@ -47,9 +47,6 @@ def test_capability_settings_include_dependencies_and_enforce_one_solver():
         {"id": "other", "capability": "solver", "requires": []},
     ]
     result = configuration({"request": {"goal": {"output": {}}}}, ["goal"], {"goal": {"value": 1}}, plugins)
-    assert result["catalog"]["plugins"] == [
-        {"use": "backward_chain", "settings": {}},
-        {"use": "goal", "settings": {"value": 1}},
-    ]
+    assert result == {"solver": {"backward_chain": {}}, "goal": {"goal": {"value": 1}}}
     with pytest.raises(ValueError):
         configuration({}, ["goal", "other"], {}, plugins)
