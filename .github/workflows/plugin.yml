@@ -25,5 +25,5 @@ jobs:
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
-      - run: python3 tests/qgis_smoke.py
-        env: {QT_QPA_PLATFORM: offscreen, PYTHONPATH: '.'}
+      - run: PYTHONPATH=".:$PYTHONPATH" python3 tests/qgis_smoke.py
+        env: {QT_QPA_PLATFORM: offscreen}
