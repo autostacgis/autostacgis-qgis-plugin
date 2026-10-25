@@ -80,7 +80,51 @@ class CatalogDock(QDockWidget):
         self.editors = {}
         self.document = {
             "solver": {"backward_chain": {}},
-            "goal": {"metadata-value": {"path": "properties.ready", "value": True}},
+            "goal": {
+                "metadata-value": {
+                    "name": "mosaic",
+                    "kind": "raster",
+                    "path": "assets.$asset.data_state:mosaic",
+                    "value": True,
+                    "select": {
+                        "kind": "raster",
+                        "require": {"assets.$asset.data_state:spectral_sampling": "multispectral"},
+                    },
+                }
+            },
+            "process": {
+                "align_grid": {"crs": "EPSG:6933"},
+                "extract_footprints": {},
+                "clean_footprints": {
+                    "hole_edge_distance": 0,
+                    "hole_to_hole_distance": 0,
+                    "simplify_smoothing_radius": 0,
+                    "simplify_tolerance": 0,
+                    "filter_area_rank": None,
+                },
+                "voronoi_seamlines": {},
+                "mask_by_polygons": {},
+                "mosaic": {},
+            },
+            "execution": {
+                "steps": {
+                    "project": {"plugin": "align_grid"},
+                    "footprints": {
+                        "plugin": "extract_footprints",
+                        "inputs": {"images": "result:project:result"},
+                    },
+                    "clean": {"plugin": "clean_footprints", "inputs": {"vector": "result:footprints:result"}},
+                    "seamlines": {
+                        "plugin": "voronoi_seamlines",
+                        "inputs": {"footprints": "result:clean:result"},
+                    },
+                    "mask": {
+                        "plugin": "mask_by_polygons",
+                        "inputs": {"image": "result:project:result", "mask": "result:seamlines:result"},
+                    },
+                    "mosaic": {"plugin": "mosaic", "inputs": {"images": "result:mask:result"}},
+                }
+            },
         }
         self.syncing = False
         self.workflow_dirty = False
