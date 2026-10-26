@@ -749,9 +749,7 @@ class CatalogDock(QDockWidget):
             raise ValueError("Connect first")
         value = {"configuration": self.configuration()}
         items = self.selected_items()
-        if trigger:
-            value["trigger"] = trigger
-        elif items:
+        if not trigger and items:
             value["inputs"] = items
         self.client.request(
             "autostacgis/" + operation,

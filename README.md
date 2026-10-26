@@ -28,3 +28,5 @@ Workflows use one JSON document with plugin types as the top-level sections. The
 Plugin descriptions come from the required Python module docstring. Defaults, parameter descriptions and schemas are supplied by the library. Both JSON views edit the same document; the GUI offers declared optional parameters with their defaults. Unsupported complex annotations remain editable as JSON.
 
 The workflow library lists published workflows and saved copies on the connected backend. Activate loads the JSON into the workflow editor. Published workflows can be saved as named copies; saved workflows can be updated, copied, renamed or deleted. Discovery and downloads use `autostacgis.workflow_manager.WorkflowManager`, sharing HTTPS and checksum verification with plugin installation. The backend exposes `/autostacgis/workflows`, `/workflows/available`, and `/workflows/published/{id}`. Save-copy is POST, update is PUT, rename is PATCH and delete is DELETE. `AUTOSTACGIS_WORKFLOW_REGISTRY_URL` selects another registry.
+
+Workflows use capability sections in one configuration document. Old catalog/request documents and separate configuration overlays are rejected.

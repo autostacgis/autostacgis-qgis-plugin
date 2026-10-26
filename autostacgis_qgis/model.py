@@ -103,6 +103,9 @@ def asset_provider(asset):
 
 
 def configuration(document, selected, settings, plugins):
+    unknown = set(document) - {*CAPABILITIES, "execution", "metadata_structure"}
+    if unknown:
+        raise ValueError("Unknown workflow sections: " + ", ".join(sorted(unknown)))
     result = deepcopy(document)
     definitions = {plugin["id"]: plugin for plugin in plugins}
     for capability in CAPABILITIES:
@@ -111,8 +114,6 @@ def configuration(document, selected, settings, plugins):
                 raise ValueError(f"Unavailable {capability} plugin {name}")
     for capability in CAPABILITIES:
         result.pop(capability, None)
-    result.pop("catalog", None)
-    result.pop("request", None)
     enabled = set(selected)
     pending = list(selected)
     while pending:

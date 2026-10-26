@@ -46,7 +46,13 @@ def test_capability_settings_include_dependencies_and_enforce_one_solver():
         {"id": "backward_chain", "capability": "solver", "requires": []},
         {"id": "other", "capability": "solver", "requires": []},
     ]
-    result = configuration({"request": {"goal": {"output": {}}}}, ["goal"], {"goal": {"value": 1}}, plugins)
+    result = configuration({}, ["goal"], {"goal": {"value": 1}}, plugins)
     assert result == {"solver": {"backward_chain": {}}, "goal": {"goal": {"value": 1}}}
     with pytest.raises(ValueError):
         configuration({}, ["goal", "other"], {}, plugins)
+
+
+@pytest.mark.parametrize("document", [{"catalog": {}}, {"request": {}}, {"plugins": []}])
+def test_old_workflow_sections_are_rejected(document):
+    with pytest.raises(ValueError, match="Unknown workflow sections"):
+        configuration(document, [], {}, [])
